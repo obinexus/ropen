@@ -96,4 +96,4 @@ Film Notes
 
 --------------------------------------------------------------------
 One-Sentence Close-Out
-> “In ¼ log n time and ½ log n space, ROPEN lifts any 1-D ELF into a 3-D duplex stream—without ever vacating the chamber or dropping a zero.”
+> “In ¼ log n time and ½ log n space, ROPEN lifts any 1-D ELF into a 3-D duplex stream—without ever vacating the chamber or dropping a zero.”# ropen
