@@ -1,62 +1,65 @@
 /*
- * rift_open.c  –  Rift Stage-3 Hex Encoder + Red-Black AVL pruning
- * Builds:  librift_open.so | .dylib | .dll
- * ELF-bootstep protocol for sparse duplex 2→1 encoding
+ * ropen.c  –  Rift Stage-3 Hex Encoder (MinGW-safe)
+ * Builds:  ropen.dll  +  ropen.exe  (CLI)
+ * 2→1 sparse duplex, Red-Black AVL pruning, ELF-bootstep
  */
 
-#define _GNU_SOURCE
+#ifdef _WIN32
+#  define RIFT_API __declspec(dllexport)
+#  ifdef RIFT_OPEN_MAIN
+     /* CLI needs a main – no DLL decoration */
+#  else
+#    define RIFT_API __declspec(dllexport)
+#  endif
+#else
+#  define RIFT_API __attribute__((visibility("default")))
+#endif
+
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <wchar.h>
 
-/* ---------- Rift Triplet (exact memory layout) ---------- */
+/* ---------- Rift Triplet ---------- */
 typedef struct {
     uint8_t  type;      /* 0 = hex, 1 = conjugate, 2 = epsilon */
-    uint8_t  polarity;  /* '+' or '-' */
+    uint8_t  polarity;  /* '+' 0x2B  '-' 0x2D */
     uint16_t reserved;
 } RIFTToken;
 
 typedef struct {
-    union {
-        uint8_t  u8;
-        uint16_t u16;
-        uint32_t u32;
-    } value;
+    union { uint8_t u8; uint16_t u16; uint32_t u32; } value;
 } RIFTTokenValue;
 
 typedef struct {
-    size_t   size;      /* bytes allocated */
-    void    *ptr;       /* heap block */
+    size_t size; void *ptr;
 } RIFTTokenMemory;
 
-/* ---------- Red-Black AVL Node (ported from your Python) ---------- */
+/* ---------- Red-Black AVL ---------- */
 typedef struct RBNode {
     uint32_t      key;
-    uint8_t       val;          /* single char or byte */
-    uint8_t       polarity;     /* '+' 0x2B  '-' 0x2D */
+    uint8_t       val;
+    uint8_t       polarity;
     float         confidence;
-    uint8_t       color;        /* 0 = BLACK  1 = RED */
+    uint8_t       color;
     uint8_t       height;
     struct RBNode *left, *right, *parent;
 } RBNode;
 
-/* ---------- Globals ---------- */
 static RBNode *rb_root = NULL;
-static const float PRUNE_THRESHOLD   = 0.5f;
-static const int   PRUNE_STREAK      = 1;
-static const uint8_t POLARITY_POS    = '+';
-static const uint8_t POLARITY_NEG    = '-';
+static const float PRUNE_THRESHOLD = 0.5f;
+static const int   PRUNE_STREAK    = 1;
+static const uint8_t POLARITY_POS  = '+';
+static const uint8_t POLARITY_NEG  = '-';
 
-/* ---------- RB-AVL helpers ---------- */
-static uint8_t height(struct RBNode *n) { return n ? n->height : 0; }
-static int bf(struct RBNode *n) { return n ? (int)height(n->left) - (int)height(n->right) : 0; }
-static void update_height(struct RBNode *n) { if (n) n->height = 1 + (height(n->left) > height(n->right) ? height(n->left) : height(n->right)); }
+/* ---- utilities ---- */
+static uint8_t height(RBNode *n) { return n ? n->height : 0; }
+static int bf(RBNode *n) { return n ? (int)height(n->left) - (int)height(n->right) : 0; }
+static void update_height(RBNode *n) { if (n) n->height = 1 + (height(n->left) > height(n->right) ? height(n->left) : height(n->right)); }
 
-static struct RBNode *rotate_left(struct RBNode *x) {
-    struct RBNode *y = x->right; if (!y) return x;
+static RBNode *rotate_left(RBNode *x) {
+    RBNode *y = x->right; if (!y) return x;
     x->right = y->left;  if (y->left) y->left->parent = x;
     y->parent = x->parent;
     if (x->parent) {
@@ -68,8 +71,8 @@ static struct RBNode *rotate_left(struct RBNode *x) {
     return y;
 }
 
-static struct RBNode *rotate_right(struct RBNode *x) {
-    struct RBNode *y = x->left; if (!y) return x;
+static RBNode *rotate_right(RBNode *x) {
+    RBNode *y = x->left; if (!y) return x;
     x->left = y->right; if (y->right) y->right->parent = x;
     y->parent = x->parent;
     if (x->parent) {
@@ -81,7 +84,7 @@ static struct RBNode *rotate_right(struct RBNode *x) {
     return y;
 }
 
-static void rebalance_up(struct RBNode *n) {
+static void rebalance_up(RBNode *n) {
     while (n) {
         update_height(n);
         int b = bf(n);
@@ -95,8 +98,8 @@ static void rebalance_up(struct RBNode *n) {
     }
 }
 
-/* ---------- Insert / Mark / Prune ---------- */
-static struct RBNode *bst_insert(struct RBNode *root, struct RBNode *node) {
+/* ---- insert / mark / prune ---- */
+static RBNode *bst_insert(RBNode *root, RBNode *node) {
     if (!root) return node;
     if (node->key < root->key) {
         root->left = bst_insert(root->left, node);
@@ -105,9 +108,9 @@ static struct RBNode *bst_insert(struct RBNode *root, struct RBNode *node) {
         root->right = bst_insert(root->right, node);
         root->right->parent = root;
     } else { /* update in place */
-        root->val       = node->val;
-        root->confidence= node->confidence;
-        root->polarity  = node->polarity;
+        root->val        = node->val;
+        root->confidence = node->confidence;
+        root->polarity   = node->polarity;
         free(node);
         return root;
     }
@@ -116,15 +119,15 @@ static struct RBNode *bst_insert(struct RBNode *root, struct RBNode *node) {
 }
 
 static void rb_insert(uint32_t key, uint8_t val, float conf, uint8_t pol) {
-    struct RBNode *n = calloc(1, sizeof(*n));
+    RBNode *n = calloc(1, sizeof(*n));
     n->key = key; n->val = val; n->confidence = conf; n->polarity = pol;
     n->color = (rb_root ? 1 : 0);   /* root is BLACK */
     rb_root = bst_insert(rb_root, n);
     rebalance_up(n->parent ? n->parent : n);
 }
 
-static struct RBNode *find(uint32_t key) {
-    struct RBNode *cur = rb_root;
+static RBNode *find(uint32_t key) {
+    RBNode *cur = rb_root;
     while (cur) {
         if (key == cur->key) return cur;
         cur = (key < cur->key) ? cur->left : cur->right;
@@ -132,17 +135,18 @@ static struct RBNode *find(uint32_t key) {
     return NULL;
 }
 
+/* FIXED: streak[] is now file-static, not inside if-block */
+static int streak[256] = {0};
+
 static void mark_measurement(uint32_t key, float conf, uint8_t pol) {
-    struct RBNode *n = find(key);
+    RBNode *n = find(key);
     if (!n) return;
     n->confidence = conf;
     if (pol) n->polarity = pol;
     /* pruning decision */
     if (conf < PRUNE_THRESHOLD || n->polarity == POLARITY_NEG) {
-        static int streak[256] = {0};
         streak[key & 0xFF]++;
         if (streak[key & 0xFF] >= PRUNE_STREAK) {
-            /* lazy delete – just zero val */
             n->val = 0; n->confidence = 0.0f;
         }
     } else streak[key & 0xFF] = 0;
@@ -158,19 +162,12 @@ static size_t rift_encode(const uint8_t *in, size_t in_len, uint8_t *out, bool p
         uint8_t b = (i + 1 < in_len) ? in[i + 1] : 0x00; /* epsilon pad */
         uint8_t logical = (polarity_A ? a : conjugate(a)) ^ (polarity_A ? conjugate(b) : b);
         out[out_len++] = logical;
-        /* insert triplet into tree for pruning */
-        rb_insert((uint32_t)out_len, logical, 1.0f, polarity_A ? '+' : '-');
+        rb_insert((uint32_t)out_len, logical, 1.0f, polarity_A ? POLARITY_POS : POLARITY_NEG);
     }
     return out_len;
 }
 
 /* ---------- Public API ---------- */
-#ifdef _WIN32
-  #define RIFT_API __declspec(dllexport)
-#else
-  #define RIFT_API __attribute__((visibility("default")))
-#endif
-
 RIFT_API size_t rift_open(const char *path, uint8_t *out, size_t out_cap, bool polarity_A) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -185,10 +182,7 @@ RIFT_API size_t rift_open(const char *path, uint8_t *out, size_t out_cap, bool p
     return total;
 }
 
-RIFT_API void rift_prune_negative(void) {
-    /* walk tree and drop negative-polarity nodes */
-    /* (already handled lazily in mark_measurement) */
-}
+RIFT_API void rift_prune_negative(void) { /* already lazy */ }
 
 /* ---------- CLI stub ---------- */
 #ifdef RIFT_OPEN_MAIN
